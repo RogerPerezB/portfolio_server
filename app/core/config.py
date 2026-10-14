@@ -15,8 +15,8 @@ class Settings:
     INTERVALS_API_KEY: str = os.getenv("INTERVALS_API_KEY", "")
     INTERVALS_ATHLETE_ID: str = os.getenv("INTERVALS_ATHLETE_ID", "0")
     
-    # LeetCode configuration
-    LEETCODE_USERNAME: str = os.getenv("LEETCODE_USERNAME", "RogerPerezB")
+    # LeetCode configuration (Correct handle is rogerpb)
+    LEETCODE_USERNAME: str = os.getenv("LEETCODE_USERNAME", "rogerpb")
     LEETCODE_POLL_INTERVAL_HOURS: int = int(os.getenv("LEETCODE_POLL_INTERVAL_HOURS", "2"))
 
     # Garmin polling window & defaults (Gatineau, QC Eastern Time)
