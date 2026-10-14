@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  api:
+    build: .
+    container_name: portfolio-telemetry-server
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=development
+      - PORT=8000
+      - HOST=0.0.0.0
+      - TIMEZONE=America/Toronto
+      - DEFAULT_SLEEP_SCORE=85
+      - POLL_START_HOUR=8
+      - POLL_END_HOUR=13
+      - INTERVALS_API_KEY=${INTERVALS_API_KEY:-}
+      - INTERVALS_ATHLETE_ID=${INTERVALS_ATHLETE_ID:-0}
+      - LEETCODE_USERNAME=${LEETCODE_USERNAME:-RogerPerezB}
+    restart: unless-stopped
