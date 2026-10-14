@@ -19,7 +19,8 @@ class GarminService:
             "is_default": False,
             "status": "uninitialized",
             "last_updated": None,
-            "source": "none"
+            "source": "none",
+            "message": None
         }
         self.tz = ZoneInfo(settings.TIMEZONE)
 
@@ -36,15 +37,33 @@ class GarminService:
 
     async def sync_sleep_score(self, force: bool = False) -> Dict[str, Any]:
         """
-        Polls Intervals.icu for today's sleep score between 8 AM and 1 PM (Eastern Time).
-        - Stops asking once today's score is retrieved.
-        - Defaults to 85 after 1:00 PM if no score is returned.
+        State Machine for Sleep Score Telemetry:
+        1. 00:00 - 08:00 AM (Eastern Time): Status is 'asleep' (overnight vitals monitoring).
+        2. 08:00 AM - 1:00 PM: Hourly polling to Intervals.icu until sleepScore is populated.
+           - Stops asking once today's score is retrieved.
+        3. 1:00 PM onwards: If no score retrieved from Garmin, seals default score of 85.
         """
         now = self._get_local_now()
         today = now.date().isoformat()
         current_hour = now.hour
 
-        # 1. Stop asking if today's score is already filled (unless forced)
+        # 1. Midnight to 8:00 AM (Eastern Time): Asleep window
+        if current_hour < settings.POLL_START_HOUR and not force:
+            self._cache = {
+                "score": None,
+                "date": today,
+                "duration_seconds": None,
+                "hrv": None,
+                "is_default": False,
+                "status": "asleep",
+                "last_updated": datetime.now(timezone.utc).isoformat(),
+                "source": "garmin_telemetry",
+                "message": "Asleep (monitoring vitals overnight on Garmin watch)"
+            }
+            logger.info(f"[GarminService] Night window active (hour={current_hour} ET). Status: asleep.")
+            return self._cache
+
+        # 2. Stop asking if today's score is already filled (unless forced)
         if not force and self.is_score_filled_for_today(today):
             logger.info(
                 f"[GarminService] Score already filled for {today}: "
@@ -52,14 +71,14 @@ class GarminService:
             )
             return self._cache
 
-        # 2. Check if we have credentials
+        # 3. Check if we have credentials
         if not settings.INTERVALS_API_KEY:
             logger.warning("[GarminService] INTERVALS_API_KEY is not configured.")
             if current_hour >= settings.POLL_END_HOUR or force:
                 self._apply_fallback(today, "API key not set, applied default score.")
             return self._cache
 
-        # 3. Check if we are within the allowed polling window (8:00 AM - 1:00 PM)
+        # 4. Check if we are within the allowed polling window (8:00 AM - 1:00 PM)
         in_window = settings.POLL_START_HOUR <= current_hour <= settings.POLL_END_HOUR
 
         if in_window or force:
@@ -88,7 +107,8 @@ class GarminService:
                                     "is_default": False,
                                     "status": "synced",
                                     "last_updated": datetime.now(timezone.utc).isoformat(),
-                                    "source": "garmin_sync"
+                                    "source": "garmin_sync",
+                                    "message": "Live sleep score synced successfully"
                                 }
                                 logger.info(f"[GarminService] Successfully synced sleep score: {sleep_score}/100 for {today}.")
                                 return self._cache
@@ -102,18 +122,9 @@ class GarminService:
                 except Exception as e:
                     logger.error(f"[GarminService] Network or parsing error during sync: {e}")
 
-        # 4. If after 1:00 PM and still no score, assign default score of 85
+        # 5. If after 1:00 PM and still no score, assign default score of 85
         if current_hour >= settings.POLL_END_HOUR and not self.is_score_filled_for_today(today):
             self._apply_fallback(today, "Past 1:00 PM without sleep score. Default score applied.")
-
-        # 5. If before 8:00 AM or waiting in window without data
-        elif current_hour < settings.POLL_START_HOUR and not self._cache.get("score"):
-            self._cache["date"] = today
-            self._cache["status"] = "awaiting_window"
-            self._cache["score"] = settings.DEFAULT_SLEEP_SCORE
-            self._cache["is_default"] = True
-            self._cache["source"] = "default_fallback"
-            self._cache["last_updated"] = datetime.now(timezone.utc).isoformat()
 
         return self._cache
 
@@ -126,7 +137,8 @@ class GarminService:
             "is_default": True,
             "status": "default_fallback",
             "last_updated": datetime.now(timezone.utc).isoformat(),
-            "source": "default_fallback"
+            "source": "default_fallback",
+            "message": "Default fallback score assigned"
         }
         logger.info(f"[GarminService] {reason} Assigned score: {settings.DEFAULT_SLEEP_SCORE}/100.")
 

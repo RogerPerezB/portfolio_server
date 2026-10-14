@@ -10,19 +10,20 @@ router = APIRouter(tags=["Garmin / Telemetry"])
 async def get_garmin_sleep(force_refresh: bool = Query(False, description="Force re-querying Intervals.icu")):
     """
     Returns today's sleep score synced from Garmin via Intervals.icu.
+    - Midnight to 8:00 AM Eastern Time: status is 'asleep' (monitoring vitals).
     - Polled hourly from 8:00 AM to 1:00 PM Eastern Time until populated.
     - If no score is received after 1:00 PM, returns the default score of 85.
     """
     data = await garmin_service.get_latest_sleep(force_refresh=force_refresh)
 
-    if not data or data.get("score") is None:
+    if not data or (data.get("score") is None and data.get("status") != "asleep"):
         raise HTTPException(status_code=503, detail="Sleep score data is warming up or temporarily unavailable.")
 
     return GarminSleepResponse(
-        source=data.get("source", "cache"),
+        source=data.get("source", "garmin_telemetry"),
         last_updated=data.get("last_updated") or "",
         data=SleepData(
-            score=data["score"],
+            score=data.get("score"),
             date=data.get("date") or "",
             duration_seconds=data.get("duration_seconds"),
             hrv=data.get("hrv"),
