@@ -15,43 +15,45 @@ scheduler = AsyncIOScheduler(timezone=ZoneInfo(settings.TIMEZONE))
 
 def setup_scheduler():
     """
-    Registers periodic background tasks:
-    1. Garmin Sleep Polling: Runs every hour on the hour between 8:00 AM and 1:00 PM (Eastern Time).
-    2. LeetCode Submissions: Runs every 2 hours to keep the cache fresh.
+    Registers periodic silent background tasks:
+    1. Garmin Sleep Polling: Starts at 8:00 AM Eastern Time and runs every 30 minutes (8:00, 8:30, 9:00, ...)
+       until today's sleep score is received, then skips further checks for the rest of the day.
+    2. Garmin Midnight Rollover: Resets status to 'asleep' at 00:00 Eastern Time.
+    3. LeetCode Submissions: Runs every 2 hours in the background and saves to the JSON database.
     """
-    # Garmin cron: runs every hour at minute 0 during the polling window (8:00 to 13:00)
+    # 1. Garmin 30-minute polling starting at 8:00 AM ET (minute 0 and 30 of every hour from 8:00 AM to 11:30 PM)
     scheduler.add_job(
-        garmin_service.scheduled_hourly_job,
+        garmin_service.scheduled_poll_job,
         trigger=CronTrigger(
-            hour=f"{settings.POLL_START_HOUR}-{settings.POLL_END_HOUR}",
+            hour=f"{settings.POLL_START_HOUR}-23",
+            minute="0,30",
+            timezone=ZoneInfo(settings.TIMEZONE)
+        ),
+        id="garmin_sleep_poll_30m",
+        name="Poll Intervals.icu every 30m starting at 8am until score received",
+        replace_existing=True
+    )
+
+    # 2. Garmin overnight rollover at midnight ET
+    scheduler.add_job(
+        garmin_service.scheduled_poll_job,
+        trigger=CronTrigger(
+            hour=0,
             minute=0,
             timezone=ZoneInfo(settings.TIMEZONE)
         ),
-        id="garmin_sleep_poll",
-        name="Poll Intervals.icu for Garmin Sleep Score",
+        id="garmin_midnight_rollover",
+        name="Reset Garmin status to asleep at midnight ET",
         replace_existing=True
     )
 
-    # Also add a backup job at 1:05 PM to ensure default fallback is sealed if no score arrived
-    scheduler.add_job(
-        garmin_service.scheduled_hourly_job,
-        trigger=CronTrigger(
-            hour=settings.POLL_END_HOUR,
-            minute=5,
-            timezone=ZoneInfo(settings.TIMEZONE)
-        ),
-        id="garmin_fallback_seal",
-        name="Seal Garmin Sleep Default Fallback",
-        replace_existing=True
-    )
-
-    # LeetCode interval: runs every N hours
+    # 3. LeetCode interval: runs every N hours
     scheduler.add_job(
         leetcode_service.fetch_latest_submission,
         trigger=IntervalTrigger(hours=settings.LEETCODE_POLL_INTERVAL_HOURS),
         id="leetcode_poll",
-        name="Refresh LeetCode Submissions Cache",
+        name="Refresh LeetCode Submissions in JSON DB",
         replace_existing=True
     )
 
-    logger.info("[Scheduler] Registered background tasks successfully.")
+    logger.info("[Scheduler] Registered 30-minute Garmin polling (from 8:00 AM) and LeetCode background jobs.")

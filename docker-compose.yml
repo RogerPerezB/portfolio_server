@@ -6,15 +6,17 @@ services:
     container_name: portfolio-telemetry-server
     ports:
       - "8000:8000"
+    volumes:
+      - ./data:/app/data
     environment:
       - ENVIRONMENT=development
       - PORT=8000
       - HOST=0.0.0.0
+      - DB_FILE_PATH=/app/data/telemetry_db.json
       - TIMEZONE=America/Toronto
-      - DEFAULT_SLEEP_SCORE=85
       - POLL_START_HOUR=8
-      - POLL_END_HOUR=13
+      - GARMIN_POLL_INTERVAL_MINUTES=30
       - INTERVALS_API_KEY=${INTERVALS_API_KEY:-}
       - INTERVALS_ATHLETE_ID=${INTERVALS_ATHLETE_ID:-0}
-      - LEETCODE_USERNAME=${LEETCODE_USERNAME:-RogerPerezB}
+      - LEETCODE_USERNAME=${LEETCODE_USERNAME:-rogerpb}
     restart: unless-stopped

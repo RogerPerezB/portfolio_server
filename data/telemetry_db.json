@@ -1,0 +1,18 @@
+{
+  "garmin": {
+    "score": null,
+    "date": null,
+    "duration_seconds": null,
+    "hrv": null,
+    "is_default": false,
+    "status": "no_score_yet",
+    "last_updated": null,
+    "source": "json_db",
+    "message": "No score yet"
+  },
+  "leetcode": {
+    "latest_submission": null,
+    "last_updated": null,
+    "status": "uninitialized"
+  }
+}

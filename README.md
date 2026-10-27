@@ -5,40 +5,40 @@
 [![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker)](https://www.docker.com)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
 
-A production-grade, asynchronous backend microservice designed to ingest, cache, and serve real-time developer telemetry metrics to my portfolio website:
-1. **Garmin Vitals via Intervals.icu**: Daily sleep score monitoring with intelligent hourly polling and deterministic fallback.
-2. **LeetCode Activity via GraphQL**: Cached algorithmic submissions with automatic periodic background synchronization.
+A production-grade, asynchronous backend microservice that silently polls external telemetry APIs in the background, persists the latest state into a local JSON database (`data/telemetry_db.json`), and serves instant responses to the portfolio frontend:
+1. **Garmin Vitals via Intervals.icu**: Daily sleep score monitoring starting at 8:00 AM ET, polling every 30 minutes until today's score is received, and returning `"No score yet"` before sync completes.
+2. **LeetCode Activity via GraphQL**: Cached algorithmic submissions with automatic periodic background synchronization persisted to JSON.
 
 ---
 
 ## 🏛️ System Design & Architecture
 
-The application adheres to a clean **Layered Architecture** with strict separation of concerns:
+The application decouples frontend `GET` requests from external network calls using a persistent JSON database (`app/core/database.py`):
 
 ```
 [ Client / Portfolio Frontend ]
-              │ (HTTP / JSON)
+              │ (HTTP GET — Instant Read < 2ms)
               ▼
     ┌───────────────────────────────────────────┐
     │          FastAPI Application              │
-    │  (CORS, OpenTelemetry / Health, Routing)   │
-    └─────┬───────────────────────────────┬─────┘
-          │                               │
-          ▼                               ▼
-    ┌───────────────┐               ┌───────────────┐
-    │ Garmin Router │               │LeetCode Router│
-    └───────┬───────┘               └───────┬───────┘
-            │                               │
-            ▼                               ▼
-    ┌───────────────────────┐       ┌───────────────────────┐
-    │     GarminService     │       │    LeetCodeService    │
-    │ (In-Memory Hot Cache) │       │ (In-Memory Hot Cache) │
-    └───────┬───────────────┘       └───────┬───────────────┘
-            │                               │
-            ├───────────────┐               │
-            ▼               ▼               ▼
-     [APScheduler]     [Intervals.icu]  [LeetCode GraphQL]
-    (8 AM - 1 PM ET)    (REST API v1)    (Submissions API)
+    │     (Garmin & LeetCode REST Routers)      │
+    └─────────────────┬─────────────────────────┘
+                      │ Reads Latest State
+                      ▼
+    ┌───────────────────────────────────────────┐
+    │      Local JSON Database + RAM Cache      │
+    │          (data/telemetry_db.json)         │
+    └─────────▲───────────────────────▲─────────┘
+              │ Writes State          │ Writes State
+    ┌─────────┴─────────┐   ┌─────────┴─────────┐
+    │   GarminService   │   │  LeetCodeService  │
+    └─────────▲─────────┘   └─────────▲─────────┘
+              │                       │
+      [APScheduler]           [APScheduler]
+   (Every 30m from 8 AM)      (Every 2 Hours)
+              │                       │
+              ▼                       ▼
+       [Intervals.icu]       [LeetCode GraphQL]
 ```
 
 ### Directory Structure
@@ -48,16 +48,19 @@ portfolio_server/
 ├── app/
 │   ├── core/
 │   │   ├── config.py           # Typed environment settings
-│   │   └── scheduler.py        # Centralized APScheduler (Cron & Interval)
+│   │   ├── database.py         # Thread-safe local JSON database (data/telemetry_db.json)
+│   │   └── scheduler.py        # Centralized APScheduler (30m Garmin & 2h LeetCode)
 │   ├── schemas/
 │   │   ├── garmin.py           # Pydantic models for sleep score & telemetry
 │   │   └── leetcode.py         # Pydantic models for LeetCode submissions
 │   ├── services/
-│   │   ├── garmin_service.py   # Intervals.icu client, window polling & caching
-│   │   └── leetcode_service.py # LeetCode GraphQL client & caching
+│   │   ├── garmin_service.py   # Intervals.icu background poller & JSON DB reader/writer
+│   │   └── leetcode_service.py # LeetCode GraphQL background poller & JSON DB reader/writer
 │   └── routers/
 │       ├── garmin.py           # GET /api/garmin/sleep, POST /api/garmin/sync
 │       └── leetcode.py         # GET /api/leetcode/latest, POST /api/leetcode/sync
+├── data/
+│   └── telemetry_db.json       # Auto-generated latest telemetry state
 ├── main.py                     # App entrypoint, lifespan, CORS & health checks
 ├── Dockerfile                  # Containerization specification
 ├── docker-compose.yml          # Multi-container / local orchestration
@@ -69,21 +72,20 @@ portfolio_server/
 
 ## ⏱️ Garmin Sleep Polling Strategy
 
-To minimize external API rate limits and mirror realistic biometric sync patterns from Garmin watches:
-
 ```text
-  00:00 - 07:59 ET               08:00 - 13:00 ET                     13:01+ ET
-─────────────────────   ──────────────────────────────────   ──────────────────────────
-Sleeping / Sync Idle    Hourly Polling Window (Every Hour)   Window Closed
-                        ├─ Query Intervals.icu API           ├─ If score synced: Return it
-                        ├─ If sleepScore found:               └─ If empty: Seal fallback
-                        │   └─ Store score & STOP polling!       to default 85 score.
-                        └─ If null: Retry next hour.
+  00:00 - 07:59 ET               08:00 - 23:30 ET (Every 30 Minutes)
+─────────────────────   ────────────────────────────────────────────────────
+Asleep / Vitals Idle    Polls Intervals.icu at :00 and :30 past the hour
+(No external polling)   ├─ If sleepScore is not yet available:
+                        │   └─ Saves status="no_score_yet", message="No score yet"
+                        └─ Once sleepScore is received:
+                            └─ Saves score to JSON DB & STOPS checking for the day!
 ```
 
-- **Timezone Aware**: Configured to `America/Toronto` (Eastern Time covering Gatineau / Ottawa / Montreal).
-- **Self-Terminating Polling**: Once today's valid score is retrieved, subsequent polls in that day are immediately skipped (*"stops asking once filled"*).
-- **Graceful Fallback**: If Garmin sync is delayed past 1:00 PM, the service seals a deterministic default score of **85** (`is_default: true`) so client applications never stall.
+- **Timezone Aware**: Configured to `America/Toronto` (Eastern Time).
+- **No Premature Polling**: Never polls before 8:00 AM.
+- **Self-Terminating Polling**: Checks every 30 minutes starting at 8:00 AM until a valid score is received, then stops checking for the rest of the day.
+- **Instant Frontend Reads**: Frontend requests read directly from `data/telemetry_db.json` (and its in-memory mirror) without waiting on Intervals.icu or LeetCode.
 
 ---
 
@@ -91,46 +93,9 @@ Sleeping / Sync Idle    Hourly Polling Window (Every Hour)   Window Closed
 
 | Method | Endpoint | Description | Response Model |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/garmin/sleep` | Returns today's sleep score (synced or fallback) | `GarminSleepResponse` |
+| `GET` | `/api/garmin/sleep` | Returns today's sleep state immediately from JSON DB | `GarminSleepResponse` |
 | `POST` | `/api/garmin/sync` | Manually triggers immediate Intervals.icu sync | JSON status |
-| `GET` | `/api/leetcode/latest`| Returns latest accepted LeetCode submission | `LeetCodeResponse` |
+| `GET` | `/api/leetcode/latest`| Returns latest accepted LeetCode submission from JSON DB | `LeetCodeResponse` |
 | `POST` | `/api/leetcode/sync` | Manually triggers immediate LeetCode fetch | JSON status |
 | `GET` | `/health` | Container orchestration health check | Health object |
 | `GET` | `/docs` | Interactive Swagger / OpenAPI documentation | Swagger UI |
-
----
-
-## 🚀 Quickstart & Local Development
-
-### 1. Prerequisites
-- Python 3.10+ or Docker
-- Intervals.icu API key (from Intervals.icu -> Settings -> API Access)
-
-### 2. Local Environment Setup
-```bash
-# Clone and enter the repository
-cd portfolio_server
-
-# Create virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Copy environment template
-cp .env.example .env
-
-# Run the development server
-uvicorn main:app --reload --port 8000
-```
-
-### 3. Running with Docker
-```bash
-# Build and run container
-docker build -t portfolio-telemetry-server .
-docker run -p 8000:8000 --env-file .env portfolio-telemetry-server
-
-# Or with Docker Compose:
-docker compose up --build
-```
